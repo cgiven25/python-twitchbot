@@ -5,6 +5,8 @@
 #   - Timestamped messages now print to the terminal.
 #   - Subscriber notifications (>=3 months so I don't get global timed out)
 #   - Sends a message when someone is banned (and it's set up for timeouts)
+############################################################################
+
 import irc.bot
 import requests
 from time import gmtime, strftime
