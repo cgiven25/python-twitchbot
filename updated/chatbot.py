@@ -1,27 +1,42 @@
 ############################################################################
 # Chris Given's Twitch Chatbot
-# Last modified: 11:32 AM, 8/26/18
+# Last modified: 7:10 AM, 8/27/18
 # Recent changelog:
-#   - Timestamped messages now print to the terminal.
-#   - Subscriber notifications (>=3 months so I don't get global timed out)
-#   - Sends a message when someone is banned (and it's set up for timeouts)
-############################################################################
-
+#   - Added cooldowns for data collection and commands
+#   - Added data collection intervals:
+#       - Allows the game to be saved as an instance variable
+#       - So when people ask for game you can prevent another API call
+#   - NOTE: added dependency for schedule module
 import irc.bot
 import requests
-from time import gmtime, strftime
+from time import gmtime, strftime, time
+from schedule import every, run_pending
 
 class Bot(irc.bot.SingleServerIRCBot):
     def __init__(self, username, clientID, token, channel):
         self.client_id = clientID
         self.token = token
         self.channel = "#" + channel
+        self.game = None
+        self.title = None
+
+        self.lastCommandTime = time()
+        self.commands = ["game", "ribbit",]
 
         # Get the channel id for API-based functions
         url = "https://api.twitch.tv/helix/users?login={}".format(channel)
         headers = {"Client-ID": clientID}
         response = requests.get(url, headers = headers).json()
         self.channelID = response["data"][0]["id"]
+
+        # Cooldowns for certain functions
+        # Data collection: Get game and title every n seconds
+        #   - NOTE: You only get 30 API calls per minute without a bearer token.
+        # Commands: Bot will not respond if a command has been issued in n seconds
+        self.cooldowns = {"dataCollection": 60,
+                          "commands": 3,}
+        self.collect()
+        every(self.cooldowns["dataCollection"]).seconds.do(self.collect)
 
         # Information for Twitch IRC server
         server = "irc.chat.twitch.tv"
@@ -57,10 +72,8 @@ class Bot(irc.bot.SingleServerIRCBot):
 
     def on_clearchat(self, c, e):
         target = e.arguments[0]
-        timeout = True if "ban-duration" in e.tags[0].values() else False
-        if timeout:
-            pass
-        else:
+        ban = False if "ban-duration" in e.tags[0].values() else True
+        if ban:
             c.privmsg(self.channel, "{} has been obliterated.".format(target))
 
     def on_roomstate(self, c, e):
@@ -70,10 +83,41 @@ class Bot(irc.bot.SingleServerIRCBot):
         pass
 
     def on_pubmsg(self, c, e):
+        run_pending()
         message = " ".join(e.arguments)
         name = e.tags[2]["value"]
-        time = strftime("%H:%M:%S", gmtime())
-        print(time, "-", name + ":", message)
+        currentTime = strftime("%H:%M:%S", gmtime())
+        print(currentTime, "-", name + ":", message)
+        if message[0] == "!" and time() - self.lastCommandTime > self.cooldowns["commands"]:
+            c.privmsg(self.channel, self.do_command(e.arguments, name))
+
+    # Collect game and title information
+    # This saves it so it can be on demand when someone asks for it instead of having to wait for API calls
+    # which might slow down the bot.
+    def collect(self):
+        response = requests.get("https://api.twitch.tv/helix/streams?user_id={}".format(self.channelID),
+                                headers={"Client-ID": self.client_id}).json()
+        try:
+            gameID = response["data"][0]["game_id"]
+            response = requests.get("https://api.twitch.tv/helix/games?id={}".format(gameID),
+                                    headers={"Client-ID": self.client_id}).json()
+            try:
+                self.game = response["data"][0]["name"]
+            except KeyError:
+                self.game = "an unlisted game"
+        except IndexError:
+            self.game = "offline"
+
+    # Execute a command when the first character of a chat message is "!".
+    def do_command(self, arguments, name):
+        command = arguments[0][1:]
+        if command not in self.commands:
+            return
+        elif command == "ribbit":
+            return "/me ribbits."
+        elif command == "game":
+            return "{} is playing {}.".format(self.channel[1:], self.game)
+        self.lastCommandTime = time()
 
 def main():
     with open("client.txt") as cl:
@@ -81,7 +125,7 @@ def main():
     with open("token.txt") as tok:
         token = tok.read()
     username = "codetoad"
-    channel = "ninja"
+    channel = "codetoad"
     bot = Bot(username, client, token, channel)
     try:
         bot.start()
